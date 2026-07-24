@@ -1,0 +1,30 @@
+/* 字体引入 - 开源近似字体替代 */
+/* 将军体 → 思源黑体加粗(Noto Sans SC Bold)；抖音体 → 站酷快乐体(ZCOOL KuaiLe) */
+
+@font-face {
+  font-family: 'JiangJunTi';
+  src: local('Noto Sans SC Bold'), local('SourceHanSansSC-Bold'),
+       url('https://fonts.gstatic.com/s/notosanssc/v35/k3kCo84MPvpLmixcA63oeAL7Iqp5IZJF9bmaG9_FnYxNbPzS5HE.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'DouYinTi';
+  src: local('ZCOOL KuaiLe'),
+       url('https://fonts.gstatic.com/s/zcoolkuaile/v17/tssqApdaRQokwFjFJjvM6h2WpozzoXhC2g.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* 备用：思源黑体常规用于数字等 */
+@font-face {
+  font-family: 'NotoSans';
+  src: local('Noto Sans SC'), local('SourceHanSansSC-Regular'),
+       url('https://fonts.gstatic.com/s/notosanssc/v35/k3kXo84MPvpLmixcA63oeAL7Iqp5IZJF9bmaG9_EnYxNbPzS5HE.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}

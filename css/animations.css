@@ -1,0 +1,8 @@
+/* ===== 右下角装饰动画 ===== */
+/* 简约渐变圆点呼吸动画 */
+@keyframes decorPulse {
+  0%, 100% { transform: scale(1); opacity: 0.6; }
+  50% { transform: scale(1.05); opacity: 0.8; }
+}
+
+.decor-anim { animation: decorPulse 4s ease-in-out infinite; }

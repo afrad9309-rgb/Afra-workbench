@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="丁慧工作台">
+<meta name="theme-color" content="#F5C9D6">
+<title>丁慧工作台</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="css/fonts.css">
+<link rel="stylesheet" href="css/main.css">
+<link rel="stylesheet" href="css/animations.css">
+</head>
+<body>
+<div id="app">
+  <header id="top-header" class="top-header">
+    <div class="header-content">
+      <div class="date-block">
+        <div class="date-main" id="dateMain"></div>
+        <div class="date-sub" id="dateSub"></div>
+      </div>
+      <div class="cat-box" id="catBox" style="display:none;"></div>
+    </div>
+    <div class="theme-dots" id="themeDots"></div>
+  </header>
+  <main class="main-body">
+    <nav id="sidebar" class="sidebar"></nav>
+    <section id="content" class="content"></section>
+  </main>
+</div>
+<script src="js/db.js"></script>
+<script src="js/sync.js"></script>
+<script src="js/components/header.js"></script>
+<script src="js/components/sidebar.js"></script>
+<script src="js/modules/todo.js"></script>
+<script src="js/modules/notes.js"></script>
+<script src="js/modules/expense.js"></script>
+<script src="js/modules/ideas.js"></script>
+<script src="js/modules/life-account.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
