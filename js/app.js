@@ -5,6 +5,7 @@
     Sync.load();
     Header.init();
     Sidebar.init();
+    Lock.init(); // 密码锁：首次设置密码 / 已有密码则锁屏等待解锁
 
     // 注册 Service Worker
     if ('serviceWorker' in navigator) {

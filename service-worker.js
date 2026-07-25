@@ -1,5 +1,5 @@
 // Service Worker - 离线缓存
-const CACHE = 'dinghui-workbench-v1';
+const CACHE = 'dinghui-workbench-v2';
 const ASSETS = [
   './',
   './index.html',
@@ -16,7 +16,8 @@ const ASSETS = [
   './js/modules/notes.js',
   './js/modules/expense.js',
   './js/modules/ideas.js',
-  './js/modules/life-account.js'
+  './js/modules/life-account.js',
+  './js/modules/lock.js'
 ];
 
 self.addEventListener('install', e => {
