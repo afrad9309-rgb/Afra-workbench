@@ -5,7 +5,8 @@ const Sidebar = (() => {
     { key:'notes', name:'常用列表', icon:'🌴' },
     { key:'expense', name:'费用大纲', icon:'💵' },
     { key:'ideas', name:'奇思妙想', icon:'🌟' },
-    { key:'life', name:'生活账目', icon:'🎏' }
+    { key:'life', name:'生活账目', icon:'🎏' },
+    { key:'sync', name:'同步', icon:'☁️' }
   ];
 
   let current = 'todo';
@@ -17,7 +18,10 @@ const Sidebar = (() => {
       const el = document.createElement('div');
       el.className = 'sidebar-item' + (it.key===current?' active':'');
       el.innerHTML = `<span class="sb-icon">${it.icon}</span><span>${it.name}</span>`;
-      el.addEventListener('click', () => { current = it.key; render(); switchTo(it.key); });
+      el.addEventListener('click', () => {
+        if (it.key === 'sync') { Sync.openPanel(); return; }
+        current = it.key; render(); switchTo(it.key);
+      });
       sb.appendChild(el);
     });
   }

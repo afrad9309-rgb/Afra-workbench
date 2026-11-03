@@ -468,3 +468,54 @@ textarea.expense-area { width: 100%; min-height: 80px; resize: vertical; }
   min-height: 20px;
 }
 .lock-setup .lock-icon { font-size: 48px; }
+
+/* ===== 4位数字密码键盘 ===== */
+.pin-dots {
+  display: flex; justify-content: center; gap: 18px;
+  margin: 10px 0 6px;
+}
+.pin-dot {
+  width: 16px; height: 16px; border-radius: 50%;
+  border: 2px solid var(--c-primary);
+  background: transparent;
+  transition: all 0.2s;
+}
+.pin-dot.filled {
+  background: var(--c-primary);
+  transform: scale(1.15);
+  box-shadow: 0 2px 8px rgba(199,125,163,0.4);
+}
+.pin-dots.shake { animation: shake 0.4s ease; }
+.pin-error {
+  color: var(--c-red); font-size: 13px;
+  font-family: var(--f-dy);
+  min-height: 20px; margin-bottom: 6px;
+}
+.pin-keypad {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 10px; max-width: 260px; margin: 0 auto;
+}
+.pin-key {
+  height: 56px; border-radius: 16px;
+  background: rgba(255,255,255,0.7);
+  border: 1px solid rgba(232,160,196,0.35);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--f-num); font-size: 22px; font-weight: 600;
+  color: var(--c-text); cursor: pointer;
+  transition: all 0.15s;
+  user-select: none; -webkit-user-select: none;
+}
+.pin-key:active {
+  background: var(--c-primary); color: #fff;
+  transform: scale(0.94);
+}
+.pin-key-del {
+  font-size: 20px; color: var(--c-text-2);
+  background: rgba(255,255,255,0.45);
+}
+.pin-key-empty { background: transparent; border: none; cursor: default; }
+.pin-skip {
+  margin-top: 14px; font-size: 13px;
+  color: var(--c-text-3); font-family: var(--f-dy);
+  cursor: pointer; text-decoration: underline;
+}

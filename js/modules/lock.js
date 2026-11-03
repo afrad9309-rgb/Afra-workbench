@@ -1,9 +1,13 @@
-// ===== 丁慧工作台 — 密码锁模块 =====
-// 功能：密码设置 / SHA-256 验证 / 锁屏 UI / 30 分钟无操作自动锁定
+// ===== 丁慧工作台 — 密码锁模块（4位数字密码） =====
+// 功能：4位数字密码设置 / SHA-256 验证 / 数字键盘锁屏 UI / 30 分钟无操作自动锁定
 const Lock = (() => {
   const LOCK_TIMEOUT = 30 * 60 * 1000; // 30 分钟
   let timer = null;
   let isLocked = false;
+  let _hasPwdCache = null;
+  let currentInput = '';   // 当前已输入的数字
+  let inputMode = null;    // 'unlock' | 'set1' | 'set2'
+  let firstPin = '';       // 设置密码时第一次输入
 
   // ===== SHA-256 哈希 =====
   async function sha256(str) {
@@ -24,139 +28,161 @@ const Lock = (() => {
     return !!await getHash();
   }
 
-  // ===== 渲染锁屏 UI =====
-  function renderLockScreen() {
-    // 如果已存在锁屏遮罩，不重复渲染
-    if (document.getElementById('lockScreen')) return;
-    isLocked = true;
-    stopIdleTimer(); // 锁定后停止计时
+  // ===== 渲染 4 位圆点 =====
+  function dotsHTML() {
+    let s = '';
+    for (let i = 0; i < 4; i++) {
+      s += `<span class="pin-dot ${i < currentInput.length ? 'filled' : ''}"></span>`;
+    }
+    return s;
+  }
 
+  function refreshDots() {
+    const box = document.getElementById('pinDots');
+    if (box) box.innerHTML = dotsHTML();
+  }
+
+  // ===== 键盘按下 =====
+  function pressDigit(d) {
+    if (currentInput.length >= 4) return;
+    currentInput += d;
+    refreshDots();
+    if (currentInput.length === 4) {
+      setTimeout(() => handleFullInput(), 150);
+    }
+  }
+  function pressDelete() {
+    currentInput = currentInput.slice(0, -1);
+    refreshDots();
+  }
+
+  async function handleFullInput() {
+    const errEl = document.getElementById('pinError');
+    const entered = currentInput;
+    currentInput = '';
+
+    if (inputMode === 'unlock') {
+      const hash = await sha256(entered);
+      const stored = await getHash();
+      if (hash === stored) {
+        errEl.textContent = '';
+        unlock();
+      } else {
+        errEl.textContent = '密码错误，请重试';
+        shakeDots();
+        refreshDots();
+      }
+    } else if (inputMode === 'set1') {
+      firstPin = entered;
+      inputMode = 'set2';
+      const sub = document.getElementById('pinSubtitle');
+      if (sub) sub.textContent = '请再次输入确认';
+      errEl.textContent = '';
+      refreshDots();
+    } else if (inputMode === 'set2') {
+      if (entered === firstPin) {
+        const hash = await sha256(entered);
+        await setHash(hash);
+        _hasPwdCache = true;
+        errEl.textContent = '';
+        unlock();
+      } else {
+        errEl.textContent = '两次输入不一致，请重新设置';
+        shakeDots();
+        inputMode = 'set1';
+        const sub = document.getElementById('pinSubtitle');
+        if (sub) sub.textContent = '请设置 4 位数字密码';
+        firstPin = '';
+        refreshDots();
+      }
+    }
+  }
+
+  function shakeDots() {
+    const box = document.getElementById('pinDots');
+    if (box) {
+      box.classList.add('shake');
+      setTimeout(() => box.classList.remove('shake'), 500);
+    }
+  }
+
+  // ===== 键盘 HTML =====
+  function keypadHTML() {
+    const keys = ['1','2','3','4','5','6','7','8','9','删除','0',''];
+    return keys.map(k => {
+      if (k === '') return `<div class="pin-key pin-key-empty"></div>`;
+      if (k === '删除') return `<div class="pin-key pin-key-del" data-act="del">⌫</div>`;
+      return `<div class="pin-key" data-digit="${k}">${k}</div>`;
+    }).join('');
+  }
+
+  // ===== 渲染锁屏 UI =====
+  function renderLockScreen(mode) {
+    if (document.getElementById('lockScreen')) return;
+    isLocked = (mode === 'unlock');
+    if (isLocked) stopIdleTimer();
+    inputMode = mode;
+    currentInput = '';
+    firstPin = '';
+
+    const isSetup = (mode !== 'unlock');
     const mask = document.createElement('div');
     mask.id = 'lockScreen';
     mask.className = 'lock-screen';
     mask.innerHTML = `
       <div class="lock-inner">
-        <div class="lock-icon">🔒</div>
-        <div class="lock-title">丁慧工作台已锁定</div>
-        <div class="lock-subtitle">请输入密码解锁</div>
-        <div class="lock-input-wrap">
-          <input type="password" id="lockPwdInput" class="lock-input" placeholder="输入密码"
-                 autocomplete="off" autofocus maxlength="20">
-          <button id="lockUnlockBtn" class="lock-btn">解锁</button>
-        </div>
-        <div id="lockError" class="lock-error"></div>
+        <div class="lock-icon">${isSetup ? '🛡️' : '🔒'}</div>
+        <div class="lock-title">${isSetup ? '设置密码保护' : '丁慧工作台已锁定'}</div>
+        <div class="lock-subtitle" id="pinSubtitle">${isSetup ? '请设置 4 位数字密码' : '请输入 4 位数字密码解锁'}</div>
+        <div class="pin-dots" id="pinDots">${dotsHTML()}</div>
+        <div class="pin-error" id="pinError"></div>
+        <div class="pin-keypad">${keypadHTML()}</div>
+        ${isSetup ? `<div class="pin-skip" id="pinSkip">暂不设置</div>` : ''}
       </div>
     `;
     document.body.appendChild(mask);
 
-    // 绑定事件
-    const input = document.getElementById('lockPwdInput');
-    const btn = document.getElementById('lockUnlockBtn');
-    const errEl = document.getElementById('lockError');
-
-    btn.addEventListener('click', () => tryUnlock(input, errEl));
-    input.addEventListener('keydown', e => {
-      if (e.key === 'Enter') tryUnlock(input, errEl);
+    // 键盘事件
+    mask.querySelectorAll('.pin-key[data-digit]').forEach(k => {
+      k.addEventListener('click', () => pressDigit(k.dataset.digit));
     });
-    // 聚焦输入框
-    setTimeout(() => input.focus(), 300);
+    const del = mask.querySelector('.pin-key-del');
+    if (del) del.addEventListener('click', pressDelete);
+
+    // 物理键盘支持（电脑端）
+    document.addEventListener('keydown', physKeyHandler);
+
+    const skip = document.getElementById('pinSkip');
+    if (skip) skip.addEventListener('click', () => {
+      document.removeEventListener('keydown', physKeyHandler);
+      closeLockScreen();
+    });
   }
 
-  async function tryUnlock(input, errEl) {
-    const pwd = input.value.trim();
-    if (!pwd) {
-      errEl.textContent = '请输入密码';
-      shakeInput(input);
+  function physKeyHandler(e) {
+    if (!document.getElementById('lockScreen')) {
+      document.removeEventListener('keydown', physKeyHandler);
       return;
     }
-    const hash = await sha256(pwd);
-    const stored = await getHash();
-    if (hash === stored) {
-      // 解锁成功
-      unlock();
-    } else {
-      errEl.textContent = '密码错误，请重试';
-      input.value = '';
-      shakeInput(input);
-    }
+    if (e.key >= '0' && e.key <= '9') pressDigit(e.key);
+    else if (e.key === 'Backspace') pressDelete();
+    e.preventDefault();
   }
 
-  function shakeInput(el) {
-    el.classList.add('shake');
-    setTimeout(() => el.classList.remove('shake'), 600);
-  }
-
-  function unlock() {
-    isLocked = false;
+  function closeLockScreen() {
     const mask = document.getElementById('lockScreen');
     if (mask) {
       mask.classList.add('unlocking');
       setTimeout(() => mask.remove(), 400);
     }
-    // 重新开始空闲计时
-    startIdleTimer();
   }
 
-  // ===== 渲染设置密码 UI =====
-  function renderSetPassword() {
-    // 创建首次设置密码的弹窗
-    const mask = document.createElement('div');
-    mask.id = 'lockScreen';
-    mask.className = 'lock-screen';
-    mask.innerHTML = `
-      <div class="lock-inner lock-setup">
-        <div class="lock-icon">🛡️</div>
-        <div class="lock-title">设置密码保护</div>
-        <div class="lock-subtitle">为工作台设置密码，30 分钟无操作将自动锁定</div>
-        <div class="lock-input-wrap">
-          <input type="password" id="lockSetPwd" class="lock-input" placeholder="设置密码（4-20位）"
-                 autocomplete="off" maxlength="20">
-        </div>
-        <div class="lock-input-wrap" style="margin-top:10px;">
-          <input type="password" id="lockSetPwd2" class="lock-input" placeholder="确认密码"
-                 autocomplete="off" maxlength="20">
-        </div>
-        <button id="lockSetBtn" class="lock-btn" style="margin-top:16px;">确认设置</button>
-        <button id="lockSkipBtn" class="lock-btn-skip">暂不设置</button>
-        <div id="lockError" class="lock-error"></div>
-      </div>
-    `;
-    document.body.appendChild(mask);
-
-    const pwd1 = document.getElementById('lockSetPwd');
-    const pwd2 = document.getElementById('lockSetPwd2');
-    const btn = document.getElementById('lockSetBtn');
-    const skip = document.getElementById('lockSkipBtn');
-    const errEl = document.getElementById('lockError');
-
-    btn.addEventListener('click', async () => {
-      const p1 = pwd1.value.trim();
-      const p2 = pwd2.value.trim();
-      if (p1.length < 4) {
-        errEl.textContent = '密码至少 4 位';
-        shakeInput(pwd1);
-        return;
-      }
-      if (p1 !== p2) {
-        errEl.textContent = '两次密码不一致';
-        shakeInput(pwd2);
-        return;
-      }
-      const hash = await sha256(p1);
-      await setHash(hash);
-      // 设置成功，关闭弹窗
-      mask.classList.add('unlocking');
-      setTimeout(() => mask.remove(), 400);
-      // 开始空闲计时
-      startIdleTimer();
-    });
-
-    skip.addEventListener('click', () => {
-      mask.classList.add('unlocking');
-      setTimeout(() => mask.remove(), 400);
-    });
-
-    setTimeout(() => pwd1.focus(), 300);
+  function unlock() {
+    isLocked = false;
+    document.removeEventListener('keydown', physKeyHandler);
+    closeLockScreen();
+    // 重新开始空闲计时
+    startIdleTimer();
   }
 
   // ===== 空闲计时器 =====
@@ -164,7 +190,7 @@ const Lock = (() => {
     stopIdleTimer();
     timer = setTimeout(() => {
       if (!isLocked && _hasPwdCache) {
-        renderLockScreen();
+        renderLockScreen('unlock');
       }
     }, LOCK_TIMEOUT);
   }
@@ -173,21 +199,12 @@ const Lock = (() => {
     if (timer) { clearTimeout(timer); timer = null; }
   }
 
-  // 重置计时器（用户有操作时）
   function resetIdleTimer() {
-    if (!isLocked) {
+    if (!isLocked && _hasPwdCache) {
       startIdleTimer();
     }
   }
 
-  // 检查是否已设置密码（同步缓存版本）
-  let _hasPwdCache = null;
-  async function await_hasPassword() {
-    if (_hasPwdCache === null) _hasPwdCache = await hasPassword();
-    return _hasPwdCache;
-  }
-
-  // 监听用户交互事件来重置计时器
   function bindIdleEvents() {
     const events = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'click'];
     events.forEach(ev => {
@@ -201,37 +218,12 @@ const Lock = (() => {
     _hasPwdCache = hasPwd;
 
     if (!hasPwd) {
-      // 首次使用，弹出设置密码
-      renderSetPassword();
+      renderLockScreen('set1');   // 首次使用，弹出设置密码
     } else {
-      // 已有密码，直接显示锁屏（安全性：每次打开都需解锁）
-      renderLockScreen();
+      renderLockScreen('unlock'); // 已有密码，显示锁屏
     }
-
-    // 绑定空闲事件监听
     bindIdleEvents();
   }
 
-  // ===== 修改密码（可在设置中调用） =====
-  async function changePassword(oldPwd, newPwd) {
-    const oldHash = await sha256(oldPwd);
-    const stored = await getHash();
-    if (oldHash !== stored) return false;
-    const newHash = await sha256(newPwd);
-    await setHash(newHash);
-    return true;
-  }
-
-  // ===== 清除密码 =====
-  async function clearPassword(pwd) {
-    const hash = await sha256(pwd);
-    const stored = await getHash();
-    if (hash !== stored) return false;
-    await DB.del('settings', 'lock_hash');
-    _hasPwdCache = false;
-    stopIdleTimer();
-    return true;
-  }
-
-  return { init, changePassword, clearPassword, hasPassword, renderLockScreen, unlock };
+  return { init, hasPassword };
 })();

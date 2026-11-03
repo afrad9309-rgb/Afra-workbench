@@ -2,10 +2,10 @@
 (async function() {
   try {
     await DB.open();
-    Sync.load();
+    Sync.init();
     Header.init();
     Sidebar.init();
-    Lock.init(); // 密码锁：首次设置密码 / 已有密码则锁屏等待解锁
+    Lock.init(); // 4位数字密码锁：首次设置 / 已有密码则锁屏等待解锁
 
     // 注册 Service Worker
     if ('serviceWorker' in navigator) {

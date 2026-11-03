@@ -25,9 +25,21 @@ const DB = (() => {
 
   async function getAll(store) { return req2promise(tx(store).getAll()); }
   async function get(store, id) { return req2promise(tx(store).get(id)); }
-  async function put(store, val) { return req2promise(tx(store, 'readwrite').put(val)); }
-  async function del(store, id) { return req2promise(tx(store, 'readwrite').delete(id)); }
-  async function clear(store) { return req2promise(tx(store, 'readwrite').clear()); }
+  async function put(store, val) {
+    const r = await req2promise(tx(store, 'readwrite').put(val));
+    if (window.Sync && store !== 'settings') Sync.notifyChange();
+    return r;
+  }
+  async function del(store, id) {
+    const r = await req2promise(tx(store, 'readwrite').delete(id));
+    if (window.Sync && store !== 'settings') Sync.notifyChange();
+    return r;
+  }
+  async function clear(store) {
+    const r = await req2promise(tx(store, 'readwrite').clear());
+    if (window.Sync && store !== 'settings') Sync.notifyChange();
+    return r;
+  }
 
   function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
