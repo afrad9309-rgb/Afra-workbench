@@ -287,7 +287,7 @@ const Sync = (() => {
     mask.className = 'modal-mask';
     mask.innerHTML = `
       <div class="modal">
-        <div class="modal-title">☁️ 云同步设置</div>
+        <div class="modal-title">☁️ 云同步设置 <span class="muted">（代码版本 V3-合并版）</span></div>
         <div class="muted" style="margin-bottom:10px;">
           手机和电脑数据自动双向合并同步（不会互相覆盖、不会丢记录）。
           需要你的 GitHub Token（需 repo 权限），
