@@ -223,18 +223,24 @@ const Sync = (() => {
           for (const t of Object.values(mergedTomb)) await DB.put('tombstones', t);
         }
 
-        // 上传合并结果（云端旧数据先备份）
+        // 上传合并结果（云端旧数据先备份）；无变化则跳过提交
         const payload = { v: 3, updatedAt: now, device: navigator.userAgent.slice(0, 40), stores: merged, tombstones: mergedTomb };
+        const cloudSnapshot = cloudData ? JSON.stringify({ stores: cloudData.stores || {}, tombstones: cloudData.tombstones || {} }) : null;
+        const newSnapshot = JSON.stringify({ stores: payload.stores, tombstones: payload.tombstones });
         try {
-          await commitData(payload, remote, cloudData);
-          committed = true;
+          if (cloudSnapshot === newSnapshot) {
+            // 云端数据与合并结果一致，无需提交
+            committed = true;
+            setStatus('数据已是最新 ✓ ' + new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }));
+            if (addedFromCloud > 0 || manual) refreshCurrentView();
+          } else {
+            await commitData(payload, remote, cloudData);
+            committed = true;
+            setStatus('已同步 ✓ ' + new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }));
+            if (addedFromCloud > 0 || manual) refreshCurrentView();
+          }
         } catch(e) {
           if (!e.conflict) throw e;   // 非冲突错误直接抛出；冲突则重试
-        }
-
-        if (committed) {
-          setStatus('已同步 ✓ ' + new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }));
-          if (addedFromCloud > 0 || manual) refreshCurrentView();
         }
       }
       if (!committed) setStatus('同步冲突，已重试 3 次未成功，请稍后再试');
