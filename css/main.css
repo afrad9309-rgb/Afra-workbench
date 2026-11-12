@@ -519,3 +519,15 @@ textarea.expense-area { width: 100%; min-height: 80px; resize: vertical; }
   color: var(--c-text-3); font-family: var(--f-dy);
   cursor: pointer; text-decoration: underline;
 }
+
+/* 同步诊断输出框 */
+.diag-box {
+  background: #1a1a1a; color: #a8e6a3;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px; line-height: 1.45;
+  padding: 10px; border-radius: 10px;
+  max-height: 220px; overflow: auto;
+  white-space: pre-wrap; word-break: break-all;
+  margin-bottom: 10px;
+  -webkit-user-select: text; user-select: text;
+}

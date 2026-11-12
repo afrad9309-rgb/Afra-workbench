@@ -213,13 +213,18 @@ const Sync = (() => {
           if (now - (mergedTomb[k].deletedAt || 0) > TOMBSTONE_KEEP) delete mergedTomb[k];
         });
 
-        // 把合并结果写回本地（仅第一次尝试时写入，避免重复写）
+        // 把合并结果写回本地（安全模式：先写入，再只删除确实消失的记录）
         if (attempt === 0) {
           for (const s of STORES) {
-            await DB.clear(s);
+            const keepIds = new Set(merged[s].map(r => r.id));
+            // 先写入合并后的记录（覆盖/新增）
             for (const r of merged[s]) await DB.put(s, r);
+            // 只删除合并结果里确实不存在的本地记录
+            for (const localRec of (local[s] || [])) {
+              if (!keepIds.has(localRec.id)) await DB.del(s, localRec.id);
+            }
           }
-          await DB.clear('tombstones');
+          // 墓碑只增不减
           for (const t of Object.values(mergedTomb)) await DB.put('tombstones', t);
         }
 
@@ -245,7 +250,9 @@ const Sync = (() => {
       }
       if (!committed) setStatus('同步冲突，已重试 3 次未成功，请稍后再试');
     } catch(e) {
-      setStatus('同步失败：' + e.message);
+      lastError = (e && e.message) || String(e);
+      console.error('[同步]', e);
+      setStatus('同步失败：' + lastError);
     }
     DB.setSilent(false);
     syncing = false;
@@ -284,6 +291,56 @@ const Sync = (() => {
     if (el) el.textContent = text;
   }
 
+  // ===== 诊断工具（显示具体错误原因） =====
+  let lastError = '';
+  async function runDiagnostics() {
+    const el = document.getElementById('syncDiag');
+    if (!el) return;
+    el.style.display = 'block';
+    el.textContent = '正在检测…';
+    const lines = [];
+    try {
+      lines.push('版本: V3-合并版');
+      lines.push('同步开关: ' + (enabled ? '已开启' : '未开启！'));
+      lines.push('Token: ' + (token ? (token.slice(0, 7) + '…长度 ' + token.length) : '空！'));
+      lines.push('用户名: ' + (owner || '空！'));
+      const counts = [];
+      for (const s of STORES) { const a = await DB.getAll(s); counts.push(s + '=' + a.length); }
+      lines.push('本地记录: ' + counts.join(' '));
+      lines.push('本地墓碑: ' + (await DB.getAll('tombstones')).length);
+      el.textContent = lines.join('\n');
+
+      if (enabled) {
+        const repoRes = await api(`/repos/${owner}/${REPO}`);
+        lines.push('仓库访问: HTTP ' + repoRes.status);
+        el.textContent = lines.join('\n');
+        if (repoRes.ok) {
+          const st = await getRemoteState();
+          if (!st) lines.push('云端分支: 不存在（空仓库）');
+          else if (!st.data) lines.push('云端: data.json 缺失或解析失败');
+          else {
+            const c = STORES.map(s => s + '=' + ((st.data.stores || {})[s] || []).length).join(' ');
+            lines.push('云端记录: ' + c);
+            lines.push('云端写入时间: ' + new Date(st.data.updatedAt || 0).toLocaleString('zh-CN'));
+          }
+          el.textContent = lines.join('\n');
+
+          lines.push('--- 执行同步测试 ---');
+          lastError = '';
+          await mergeSync(true);
+          lines.push('结果: ' + (lastError ? ('失败 → ' + lastError) : '成功'));
+          const after = [];
+          for (const s of STORES) { const a = await DB.getAll(s); after.push(s + '=' + a.length); }
+          lines.push('同步后本地: ' + after.join(' '));
+        }
+      }
+    } catch(e) {
+      lines.push('诊断异常: ' + (e && e.message || e));
+    }
+    el.textContent = lines.join('\n');
+    refreshCurrentView();
+  }
+
   // ===== 设置面板 =====
   function openPanel() {
     if (document.getElementById('syncPanel')) return;
@@ -308,11 +365,13 @@ const Sync = (() => {
           <input type="text" id="syncOwner" placeholder="例如 afrad9309-rgb" value="${owner}">
         </div>
         <div id="syncStatus" class="muted" style="margin-bottom:6px;">${enabled ? '同步已开启' : '当前未开启同步'}</div>
+        <pre id="syncDiag" class="diag-box" style="display:none;"></pre>
         <div class="modal-btns">
           <button class="btn btn-ghost" id="syncOff">关闭同步</button>
           <button class="btn btn-ghost" id="syncNow">立即同步</button>
           <button class="btn btn-primary" id="syncSave">保存并同步</button>
         </div>
+        <button class="btn btn-ghost" id="syncDiagBtn" style="width:100%;margin-top:8px;">🩺 运行诊断</button>
         <button class="btn btn-ghost" id="syncClose" style="width:100%;margin-top:8px;">关闭窗口</button>
       </div>
     `;
@@ -334,6 +393,7 @@ const Sync = (() => {
       }
     });
     document.getElementById('syncNow').addEventListener('click', () => mergeSync(true));
+    document.getElementById('syncDiagBtn').addEventListener('click', () => runDiagnostics());
     document.getElementById('syncOff').addEventListener('click', () => {
       clearConfig();
       setStatus('已关闭同步（本地数据不受影响）');

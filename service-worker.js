@@ -1,5 +1,5 @@
 // Service Worker - 离线缓存
-const CACHE = 'dinghui-workbench-v5';
+const CACHE = 'dinghui-workbench-v6';
 const ASSETS = [
   './',
   './index.html',
