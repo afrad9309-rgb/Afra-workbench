@@ -1,12 +1,16 @@
-// ===== 云同步模块（GitHub 私有仓库存储） =====
-// 原理：把所有数据打包成 data.json 存到你的 GitHub 私有仓库，
-//       手机和电脑都读写同一份，实现两端同步。
-// 使用：在侧栏「同步」里填入 GitHub Token 即可开启。
+// ===== 云同步模块 v3（GitHub 私有仓库 · 双向合并 · Git Data API） =====
+// 核心算法：每次同步把「本地数据」和「云端数据」逐条合并，
+//   - 记录级合并：同一条记录谁修改时间新就保留谁，绝不覆盖丢失
+//   - 删除墓碑：删除操作记录到 tombstones，删除也会同步且不复活有效数据
+//   - Git Data API 提交：无 1MB 大小限制；提交冲突时自动重新合并重试
+//   - 每次同步前把云端旧数据备份到 data-backup.json
 const Sync = (() => {
-  const REPO = 'Afra-workbench-sync';       // 私有数据仓库名
-  const FILE = 'data.json';                  // 数据文件名
-  const PULL_INTERVAL = 60 * 1000;           // 每 60 秒自动拉取一次
-  const PUSH_DEBOUNCE = 3 * 1000;            // 修改后 3 秒自动推送
+  const REPO = 'Afra-workbench-sync';
+  const FILE = 'data.json';
+  const BACKUP_FILE = 'data-backup.json';       // 云端旧数据备份
+  const SYNC_INTERVAL = 60 * 1000;              // 每 60 秒同步一次
+  const PUSH_DEBOUNCE = 2 * 1000;               // 修改后 2 秒自动同步
+  const TOMBSTONE_KEEP = 90 * 24 * 3600 * 1000; // 墓碑保留 90 天
   const STORES = ['todos', 'notes', 'expenses', 'ideas', 'life_now', 'life_process'];
 
   let enabled = false;
@@ -14,9 +18,7 @@ const Sync = (() => {
   let owner = '';
   let pushTimer = null;
   let pullTimer = null;
-  let pushing = false;
-  let lastCloudTime = 0;
-  let lastLocalChange = 0;
+  let syncing = false;
 
   // ===== 配置读写 =====
   function loadConfig() {
@@ -54,8 +56,9 @@ const Sync = (() => {
       }
     });
   }
+  function encodeContent(str) { return btoa(unescape(encodeURIComponent(str))); }
+  function decodeContent(b64) { return decodeURIComponent(escape(atob(b64.replace(/\n/g, '')))); }
 
-  // 首次启用时自动创建私有仓库
   async function ensureRepo() {
     const res = await api(`/repos/${owner}/${REPO}`);
     if (res.status === 404) {
@@ -69,96 +72,195 @@ const Sync = (() => {
     }
   }
 
-  // 读取云端数据
-  async function fetchCloud() {
-    const res = await api(`/repos/${owner}/${REPO}/contents/${FILE}`);
-    if (res.status === 404) return null;         // 还没有数据文件
-    if (!res.ok) throw new Error('读取云端失败：' + res.status);
-    const json = await res.json();
-    const text = decodeURIComponent(escape(atob(json.content.replace(/\n/g, ''))));
-    return { sha: json.sha, data: JSON.parse(text) };
-  }
-
-  // 写入云端数据
-  async function uploadCloud(payload, sha) {
-    const body = {
-      message: '同步数据 ' + new Date().toLocaleString('zh-CN'),
-      content: btoa(unescape(encodeURIComponent(JSON.stringify(payload))))
-    };
-    if (sha) body.sha = sha;
-    const res = await api(`/repos/${owner}/${REPO}/contents/${FILE}`, {
-      method: 'PUT',
-      body: JSON.stringify(body)
-    });
-    if (!res.ok) throw new Error('上传云端失败：' + res.status);
-    return (await res.json()).content.sha;
-  }
-
-  // ===== 推送（本地 → 云端） =====
-  async function push(manual = false) {
-    if (!enabled || pushing) return setStatus('同步中…');
-    pushing = true;
+  // ===== 读取云端最新状态（Git Data API） =====
+  // 返回 { commitSha, treeSha, data } 或 null（空仓库）
+  async function getRemoteState() {
+    let ref;
     try {
-      setStatus(manual ? '正在上传…' : '同步中…');
-      const payload = { updatedAt: Date.now(), stores: {} };
-      for (const s of STORES) payload.stores[s] = await DB.getAll(s);
-      const cloud = await fetchCloud();
-      // 冲突保护：云端比本地新且非手动推送，先拉取合并
-      if (cloud && cloud.data.updatedAt > lastLocalChange && !manual) {
-        await applyCloud(cloud);
+      ref = await api(`/repos/${owner}/${REPO}/git/ref/heads/main`);
+    } catch(e) { return null; }
+    if (ref.status === 404 || ref.status === 409) return null;   // 空仓库还没有分支
+    if (!ref.ok) throw new Error('读取云端失败：' + ref.status);
+    const refJ = await ref.json();
+    const commitSha = refJ.object.sha;
+    const commitRes = await api(`/repos/${owner}/${REPO}/git/commits/${commitSha}`);
+    if (!commitRes.ok) throw new Error('读取提交失败：' + commitRes.status);
+    const commit = await commitRes.json();
+    const treeSha = commit.tree.sha;
+    const treeRes = await api(`/repos/${owner}/${REPO}/git/trees/${treeSha}`);
+    if (!treeRes.ok) throw new Error('读取文件树失败：' + treeRes.status);
+    const tree = await treeRes.json();
+    const entry = (tree.tree || []).find(t => t.path === FILE);
+    let data = null;
+    if (entry) {
+      const blobRes = await api(`/repos/${owner}/${REPO}/git/blobs/${entry.sha}`);
+      if (!blobRes.ok) throw new Error('读取数据失败：' + blobRes.status);
+      const blob = await blobRes.json();
+      try { data = JSON.parse(decodeContent(blob.content)); } catch(e) { data = null; }
+    }
+    return { commitSha, treeSha, data };
+  }
+
+  // ===== 提交数据到云端（blob → tree → commit → ref） =====
+  // remote: getRemoteState() 的结果；backupData: 要备份的旧云端数据（可 null）
+  async function commitData(data, remote, backupData) {
+    const ts = new Date().toLocaleString('zh-CN');
+    // 1. 新数据 blob
+    const blobRes = await api(`/repos/${owner}/${REPO}/git/blobs`, {
+      method: 'POST',
+      body: JSON.stringify({ content: encodeContent(JSON.stringify(data)), encoding: 'base64' })
+    });
+    if (!blobRes.ok) throw new Error('上传数据失败：' + blobRes.status);
+    const blob = await blobRes.json();
+
+    // 2. 文件树（同时写入 data.json 和备份文件）
+    const treeEntries = [{ path: FILE, mode: '100644', type: 'blob', sha: blob.sha }];
+    if (backupData) {
+      const bakRes = await api(`/repos/${owner}/${REPO}/git/blobs`, {
+        method: 'POST',
+        body: JSON.stringify({ content: encodeContent(JSON.stringify(backupData)), encoding: 'base64' })
+      });
+      if (bakRes.ok) {
+        const bak = await bakRes.json();
+        treeEntries.push({ path: BACKUP_FILE, mode: '100644', type: 'blob', sha: bak.sha });
       }
-      const sha = cloud ? cloud.sha : null;
-      cloudSha = await uploadCloud(payload, sha);
-      lastCloudTime = payload.updatedAt;
-      setStatus('已同步 ✓ ' + new Date().toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit'}));
+    }
+    const treeBody = { tree: treeEntries };
+    if (remote && remote.treeSha) treeBody.base_tree = remote.treeSha;
+    const treeRes2 = await api(`/repos/${owner}/${REPO}/git/trees`, {
+      method: 'POST', body: JSON.stringify(treeBody)
+    });
+    if (!treeRes2.ok) throw new Error('创建文件树失败：' + treeRes2.status);
+    const newTree = await treeRes2.json();
+
+    // 3. 提交
+    const commitBody = { message: '同步 ' + ts, tree: newTree.sha, parents: (remote && remote.commitSha) ? [remote.commitSha] : [] };
+    const commitRes2 = await api(`/repos/${owner}/${REPO}/git/commits`, {
+      method: 'POST', body: JSON.stringify(commitBody)
+    });
+    if (!commitRes2.ok) throw new Error('创建提交失败：' + commitRes2.status);
+    const newCommit = await commitRes2.json();
+
+    // 4. 更新分支引用
+    let refRes;
+    if (remote && remote.commitSha) {
+      refRes = await api(`/repos/${owner}/${REPO}/git/refs/heads/main`, {
+        method: 'PATCH', body: JSON.stringify({ sha: newCommit.sha, force: false })
+      });
+    } else {
+      refRes = await api(`/repos/${owner}/${REPO}/git/refs`, {
+        method: 'POST', body: JSON.stringify({ ref: 'refs/heads/main', sha: newCommit.sha })
+      });
+    }
+    if (!refRes.ok) {
+      const err = new Error('提交冲突');
+      err.conflict = true;
+      throw err;
+    }
+  }
+
+  // ===== 记录时间戳 =====
+  function stamp(r) { return r.updatedAt || r.createdAt || 0; }
+
+  // ===== 核心：双向合并 =====
+  async function mergeSync(manual = false) {
+    if (!enabled || syncing) return;
+    syncing = true;
+    DB.setSilent(true);
+    try {
+      setStatus(manual ? '正在同步…' : '同步中…');
+
+      // 1. 读取本地数据（合并前快照固定，重试时基于最新合并结果）
+      const local = {};
+      for (const s of STORES) local[s] = await DB.getAll(s);
+      const localTomb = {};
+      (await DB.getAll('tombstones')).forEach(t => localTomb[t.id] = t);
+
+      // 2. 同步主循环：冲突时重新拉取云端再合并，最多重试 3 次
+      let committed = false;
+      for (let attempt = 0; attempt < 3 && !committed; attempt++) {
+        const remote = await getRemoteState();
+        const cloudData = (remote && remote.data && typeof remote.data === 'object') ? remote.data : null;
+
+        // 合并墓碑（两边并集，谁的新用谁的）
+        const mergedTomb = { ...localTomb };
+        if (cloudData && cloudData.tombstones) {
+          Object.entries(cloudData.tombstones).forEach(([k, t]) => {
+            if (!mergedTomb[k] || (t.deletedAt || 0) > (mergedTomb[k].deletedAt || 0)) mergedTomb[k] = t;
+          });
+        }
+
+        // 逐条合并记录
+        const merged = {};
+        let addedFromCloud = 0;
+        for (const s of STORES) {
+          const map = new Map();
+          (local[s] || []).forEach(r => map.set(r.id, r));
+          const cloudArr = (cloudData && cloudData.stores && cloudData.stores[s]) || [];
+          cloudArr.forEach(r => {
+            const tomb = mergedTomb[s + ':' + r.id];
+            if (tomb && (tomb.deletedAt || 0) >= stamp(r)) return;   // 已被删除
+            const cur = map.get(r.id);
+            if (!cur) { map.set(r.id, r); addedFromCloud++; return; }
+            if (stamp(r) > stamp(cur)) map.set(r.id, r);             // 云端更新则采用
+          });
+          merged[s] = Array.from(map.values());
+        }
+
+        // 清理过期墓碑（90天前）
+        const now = Date.now();
+        Object.keys(mergedTomb).forEach(k => {
+          if (now - (mergedTomb[k].deletedAt || 0) > TOMBSTONE_KEEP) delete mergedTomb[k];
+        });
+
+        // 把合并结果写回本地（仅第一次尝试时写入，避免重复写）
+        if (attempt === 0) {
+          for (const s of STORES) {
+            await DB.clear(s);
+            for (const r of merged[s]) await DB.put(s, r);
+          }
+          await DB.clear('tombstones');
+          for (const t of Object.values(mergedTomb)) await DB.put('tombstones', t);
+        }
+
+        // 上传合并结果（云端旧数据先备份）
+        const payload = { v: 3, updatedAt: now, device: navigator.userAgent.slice(0, 40), stores: merged, tombstones: mergedTomb };
+        try {
+          await commitData(payload, remote, cloudData);
+          committed = true;
+        } catch(e) {
+          if (!e.conflict) throw e;   // 非冲突错误直接抛出；冲突则重试
+        }
+
+        if (committed) {
+          setStatus('已同步 ✓ ' + new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }));
+          if (addedFromCloud > 0 || manual) refreshCurrentView();
+        }
+      }
+      if (!committed) setStatus('同步冲突，已重试 3 次未成功，请稍后再试');
     } catch(e) {
       setStatus('同步失败：' + e.message);
     }
-    pushing = false;
+    DB.setSilent(false);
+    syncing = false;
   }
 
-  // ===== 拉取（云端 → 本地） =====
-  let cloudSha = null;
-  async function pull(manual = false) {
-    if (!enabled || pushing) return;
+  function refreshCurrentView() {
     try {
-      const cloud = await fetchCloud();
-      if (!cloud) return;                        // 云端无数据
-      cloudSha = cloud.sha;
-      if (cloud.data.updatedAt !== lastCloudTime) {
-        if (cloud.data.updatedAt > lastLocalChange || manual) {
-          await applyCloud(cloud);
-          lastCloudTime = cloud.data.updatedAt;
-          setStatus('已从云端更新 ✓');
-        }
-      }
-    } catch(e) {
-      if (manual) setStatus('拉取失败：' + e.message);
-    }
-  }
-
-  // 应用云端数据到本地 IndexedDB，并刷新当前页面
-  async function applyCloud(cloud) {
-    for (const s of STORES) {
-      await DB.clear(s);
-      for (const item of (cloud.data.stores[s] || [])) {
-        await DB.put(s, item);
-      }
-    }
-    lastLocalChange = Date.now();
-    // 刷新当前显示的模块
-    const map = { todo:Todo, notes:Notes, expense:Expense, ideas:Ideas, life:LifeAccount };
-    const mod = map[Sidebar.current];
-    if (mod && mod.render) mod.render(document.getElementById('content'));
+      const map = { todo: Todo, notes: Notes, expense: Expense, ideas: Ideas, life: LifeAccount };
+      const mod = map[Sidebar.current];
+      if (mod && mod.render) mod.render(document.getElementById('content'));
+    } catch(e) {}
   }
 
   // ===== 定时器 =====
   function startTimers() {
     stopTimers();
-    pullTimer = setInterval(() => pull(), PULL_INTERVAL);
+    pullTimer = setInterval(() => mergeSync(), SYNC_INTERVAL);
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) pull();
+      if (!document.hidden) mergeSync();
     });
+    window.addEventListener('focus', () => mergeSync());
   }
   function stopTimers() {
     if (pullTimer) { clearInterval(pullTimer); pullTimer = null; }
@@ -167,12 +269,10 @@ const Sync = (() => {
   // ===== 数据变更通知（由 db.js 调用） =====
   function notifyChange() {
     if (!enabled) return;
-    lastLocalChange = Date.now();
     if (pushTimer) clearTimeout(pushTimer);
-    pushTimer = setTimeout(() => push(), PUSH_DEBOUNCE);
+    pushTimer = setTimeout(() => mergeSync(), PUSH_DEBOUNCE);
   }
 
-  // ===== 状态显示 =====
   function setStatus(text) {
     const el = document.getElementById('syncStatus');
     if (el) el.textContent = text;
@@ -189,7 +289,8 @@ const Sync = (() => {
       <div class="modal">
         <div class="modal-title">☁️ 云同步设置</div>
         <div class="muted" style="margin-bottom:10px;">
-          手机和电脑数据自动同步。需要你的 GitHub Token（需 repo 权限），
+          手机和电脑数据自动双向合并同步（不会互相覆盖、不会丢记录）。
+          需要你的 GitHub Token（需 repo 权限），
           数据保存在私有仓库 ${owner || '你的账号'}/${REPO}，仅自己可见。
         </div>
         <div class="modal-row">
@@ -203,7 +304,7 @@ const Sync = (() => {
         <div id="syncStatus" class="muted" style="margin-bottom:6px;">${enabled ? '同步已开启' : '当前未开启同步'}</div>
         <div class="modal-btns">
           <button class="btn btn-ghost" id="syncOff">关闭同步</button>
-          <button class="btn btn-ghost" id="syncPull">立即拉取</button>
+          <button class="btn btn-ghost" id="syncNow">立即同步</button>
           <button class="btn btn-primary" id="syncSave">保存并同步</button>
         </div>
         <button class="btn btn-ghost" id="syncClose" style="width:100%;margin-top:8px;">关闭窗口</button>
@@ -220,13 +321,13 @@ const Sync = (() => {
       setStatus('正在验证并创建同步仓库…');
       try {
         await ensureRepo();
-        await push(true);
+        await mergeSync(true);
         startTimers();
       } catch(e) {
         setStatus('开启失败：' + e.message);
       }
     });
-    document.getElementById('syncPull').addEventListener('click', () => pull(true));
+    document.getElementById('syncNow').addEventListener('click', () => mergeSync(true));
     document.getElementById('syncOff').addEventListener('click', () => {
       clearConfig();
       setStatus('已关闭同步（本地数据不受影响）');
@@ -237,10 +338,9 @@ const Sync = (() => {
   function init() {
     if (loadConfig()) {
       startTimers();
-      // 启动时拉取一次云端数据
-      setTimeout(() => pull(), 1500);
+      setTimeout(() => mergeSync(), 1500);
     }
   }
 
-  return { init, openPanel, notifyChange, push, pull, get enabled(){ return enabled; } };
+  return { init, openPanel, notifyChange, get enabled() { return enabled; } };
 })();
